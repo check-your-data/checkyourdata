@@ -52,7 +52,11 @@ class CheckYourData extends Module
         $this->name = 'checkyourdata';
         $this->tab = 'analytics_stats';
 
-        $this->version = '1.3.0';
+        $this->version = '1.3.1';
+
+        if (isset($this->module_key)) {
+            $this->module_key = 'ef2ea4408f9c25fa5c0ab7686c7e420a';
+        }
 
         $this->author = 'Check Your Data - http://www.checkyourdata.net';
 
@@ -129,6 +133,7 @@ class CheckYourData extends Module
         $ko = $ko || !$this->unregisterHook('header');
         $ko = $ko || !$this->unregisterHook('paymentTop');
         $ko = $ko || !$this->unregisterHook('updateOrderStatus');
+        $ko = $ko || !$this->unregisterHook('beforeCarrier');
 
         if (version_compare(_PS_VERSION_, '1.5', '>=') && version_compare(_PS_VERSION_, '1.6', '<')) {
             $ko = $ko || !$this->unregisterHook('displayMobileHeader');
@@ -171,6 +176,7 @@ class CheckYourData extends Module
         $ko = $ko || !$this->registerHook('header');
         $ko = $ko || !$this->registerHook('paymentTop');
         $ko = $ko || !$this->registerHook('updateOrderStatus');
+        $ko = $ko || !$this->registerHook('beforeCarrier');
 
         if (version_compare(_PS_VERSION_, '1.5', '>=') && version_compare(_PS_VERSION_, '1.6', '<')) {
             $ko = $ko || !$this->registerHook('displayMobileHeader');
@@ -196,6 +202,7 @@ class CheckYourData extends Module
 
         return !$ko;
     }
+
 
     /* Alias for PS 1.5 of hookDisplayAdminOrderContentOrder of PS 1.6 */
     public function hookDisplayAdminOrder($params)
@@ -297,7 +304,11 @@ class CheckYourData extends Module
         $out = '';
 
         // All pages, except confirmation
-        $controller = $this->context->controller->php_self;
+        $controller = null;
+        if (isset($this->context->controller->php_self)) {
+            $controller = $this->context->controller->php_self;
+        }
+
         if ($controller == 'order-confirmation') {
             return;
         }
@@ -315,14 +326,12 @@ class CheckYourData extends Module
         return $out;
     }
 
-
     /**
      * HOOK Payment choice page : JS call to APP, order init
      * @return string : html / JS to add to page
      */
     public function hookPaymentTop()
     {
-        $error = array();
         // get CYD token
         $token = Configuration::get('checkyourdata_token');
         if (empty($token)) {
@@ -338,12 +347,8 @@ class CheckYourData extends Module
         // ganalytics is activated ?
         if ($trackers['ganalytics']['active']) {
 
-            if (!CheckYourDataGAnalytics::addTrackerData($trackers['ganalytics']['ua'])) {
-                $error[] = 'No_GCID';
-            };
-        }
+            CheckYourDataGAnalytics::addTrackerData($trackers['ganalytics']['ua']);
 
-        if (count($error) == 0) {
             $trData = CheckYourDataWSHelper::getTrackersData();
             $res = $this->sendInitOrderToApp($cart->id, $trData);
 
@@ -356,26 +361,7 @@ class CheckYourData extends Module
                 // APP CYD is OK
                 $this->sendCartsInError($cart->id);
             }
-        } else {
-            if ($trackers['ganalytics']['active']) {
 
-                $data = $this->formatDataToSend($cart->id);
-                $enc = CheckYourDataWSHelper::encodeData($data);
-                // add JS vars
-                $this->trackerAction(
-                    array(
-                        'tpl' => array(
-                            'file' => 'ganalytics/payment-top.tpl',
-                            'smarty' => array(
-                                'url' => '//' . self::$dcUrl . 'ws/',
-                                'data' => 'k=' . $enc['key'] . '&d=' . $enc['data'],
-                            ),
-                        ),
-                    ),
-                    $out
-                );
-
-            }
         }
 
         return $out;
@@ -631,8 +617,8 @@ class CheckYourData extends Module
                 $res = $this->sendShopParamsToApp($token);
                 if ($res['state'] == 'ok') {
 
-                    if (isset($res['data']['trackers'])){
-                        $trackers = Tools::jsonDecode($res['data']['trackers'],true);
+                    if (isset($res['data']['trackers'])) {
+                        $trackers = Tools::jsonDecode($res['data']['trackers'], true);
                         $trackers['ganalytics']['active'] = true;
                         // save trackers conf
                         $JSON_trackers = Tools::jsonEncode($trackers);
@@ -881,7 +867,7 @@ class CheckYourData extends Module
 
         $token = Configuration::get('checkyourdata_token');
 
-
+        $s_free_period = null;
         $free_period = Configuration::get('checkyourdata_free_period');
         if (!empty($free_period)) {
 
@@ -1130,5 +1116,68 @@ class CheckYourData extends Module
     protected function getCompleteAdminUrl()
     {
         return $_SERVER['REQUEST_SCHEME'] . '://' . $_SERVER['HTTP_HOST'] . $this->getAdminUrl();
+    }
+
+
+    public function hookBeforeCarrier()
+    {
+        $error = array();
+        // get CYD token
+        $token = Configuration::get('checkyourdata_token');
+        if (empty($token)) {
+            return '';
+        }
+        $out = '';
+
+        // get order (cart)
+        $cart = $this->context->cart;
+
+        // trackers
+        $trackers = Tools::jsonDecode(Configuration::get('checkyourdata_trackers'), true);
+        // ganalytics is activated ?
+        if ($trackers['ganalytics']['active']) {
+
+            if (!CheckYourDataGAnalytics::addTrackerData($trackers['ganalytics']['ua'])) {
+                $error[] = 'No_GCID';
+            };
+        }
+
+
+        if (count($error) == 0) {
+            $trData = CheckYourDataWSHelper::getTrackersData();
+            $res = $this->sendInitOrderToApp($cart->id, $trData);
+
+            // errors
+            if ($res['state'] != 'ok') {
+                // save cart to re send
+                $this->addCartInError($cart->id);
+                error_log('Checkyourdata WS Update Order error : ' . implode("\n", $res['errors']));
+            } else {
+                // APP CYD is OK
+                $this->sendCartsInError($cart->id);
+            }
+        } else {
+            if ($trackers['ganalytics']['active']) {
+
+                $data = $this->formatDataToSend($cart->id);
+                $enc = CheckYourDataWSHelper::encodeData($data);
+                // add JS vars
+                $this->trackerAction(
+                    array(
+                        'tpl' => array(
+                            'file' => 'ganalytics/order-top.tpl',
+                            'smarty' => array(
+                                'url' => '//' . self::$dcUrl . 'ws/',
+                                'data' => 'k=' . $enc['key'] . '&d=' . $enc['data'],
+                            ),
+                        ),
+                    ),
+                    $out
+                );
+
+            }
+        }
+
+        return $out;
     }
 }
